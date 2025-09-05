@@ -1,0 +1,5 @@
+*.py  text eol=lf
+*.sh  text eol=lf
+*.c   text eol=lf
+*.h   text eol=lf
+*.diff text eol=lf
