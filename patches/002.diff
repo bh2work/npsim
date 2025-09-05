@@ -1,0 +1,110 @@
+# Patch 002
+# Summary:
+#   - CSV 컬럼 필터링(간략/전체) 지원
+#   - 기본값: 간략 모드(스윕하지 않는 파라미터, p50/p95, vectors/pages, 모든 diags 비표시)
+#   - --csv-full 지정 시 전체 컬럼 출력
+#
+# Files:
+#   - simulator.py
+#
+# New/Changed Args:
+#   --csv-full             : 지정 시 전체 컬럼 출력 (기본: 미지정 → 간략)
+#
+# Usage Example:
+#   # 간략(기본)
+#   python simulator.py run --mode INT,EXT --planes-per-group 1,2,4,8 --cache-depth-per-plane 0,1 \
+#     --com0-lin 10:100:4 --com1-lin 0:50:3 --csv sweep_002_compact.csv
+#
+#   # 전체 컬럼
+#   python simulator.py run --mode INT,EXT --planes-per-group 1,2,4,8 --cache-depth-per-plane 0,1 \
+#     --com0-lin 10:100:4 --com1-lin 0:50:3 --csv-full --csv sweep_002_full.csv
+--- a/simulator.py
++++ b/simulator.py
+@@ -30,6 +30,20 @@ class Result:
+         self.plane_max_outstanding = 0
+ 
++# ---------------------- CSV column policy (Patch 002) ----------------------
++# 파라미터 에코 키(결과 이전의 파트) - res_to_row() 정의와 동일 순서 유지
++PARAM_KEYS = [
++    "mode","total_planes","planes_per_group","n_queries","query_total_vecs",
++    "vector_dist_mode","access_mode","page_bytes","vector_bytes","tR_us","tR_hit_us",
++    "com0_us_per_vec","com1_us_per_vec","com_parallel","io_gbps","io_units_total",
++    "out_bytes_per_vector","tCA_us","ca_issue_width","t_cmd_gap_us",
++    "cache_depth_per_plane","ca_can_overlap_io",
++]
++# 간략 모드에서 유지할 핵심 결과 키
++RESULT_KEYS_COMPACT = [
++    "avg_query_latency_us","ext_avg_query_latency_us","rel_int_over_ext_latency",
++    "throughput_GBps_io","util_ARRAY","util_COM","util_IO",
++    "array_avg_concurrency","array_util_avg_per_plane_pct","com_util_avg_per_unit_pct",
++]
+ 
+ # ---------------------- Helpers ----------------------
+ def _VPP(p: Params) -> int:
+@@ -223,6 +237,22 @@ def res_to_row(p: Params, mode: str, r: Result, ext_baseline: Optional[Result]):
+     }
+     return row
+ 
++def _build_sweep_keyset(mode_list, vdm_list, am_list, pp_list, cd_list, com0_list, com1_list):
++    sweep = set()
++    if len(mode_list) > 1: sweep.add("mode")
++    if len(vdm_list)  > 1: sweep.add("vector_dist_mode")
++    if len(am_list)   > 1: sweep.add("access_mode")
++    if len(pp_list)   > 1: sweep.add("planes_per_group")
++    if len(cd_list)   > 1: sweep.add("cache_depth_per_plane")
++    if len(com0_list) > 1: sweep.add("com0_us_per_vec")
++    if len(com1_list) > 1: sweep.add("com1_us_per_vec")
++    return sweep
++
++def _compact_row(row: dict, sweep_keys: set) -> dict:
++    keep = set(sweep_keys) | set(RESULT_KEYS_COMPACT)
++    # 파라미터 중 스윕되지 않는 키는 제거
++    return {k: v for k, v in row.items() if (k in keep)}
++
+ # ---------------------- CLI ----------------------
+ def parse_multi(s: str, caster):
+     xs = [w.strip() for w in s.split(",") if w.strip()!=""]
+@@ -253,6 +283,7 @@ def main():
+     ap.add_argument("--cache-depth-per-plane", default="0",
+                     help="예: '0,1' 또는 단일 '0'")
+     ap.add_argument("--ca-can-overlap-io", default="on", choices=["on","off"])
++    ap.add_argument("--csv-full", action="store_true", help="모든 컬럼을 CSV에 출력")
+     ap.add_argument("--csv", default="results.csv")
+     args = ap.parse_args()
+ 
+@@ -279,6 +310,8 @@ def main():
+         else:
+             com1_list = parse_multi(args.com1_us_per_vec, float)
+ 
++        sweep_keys = _build_sweep_keyset(mode_list, vdm_list, am_list, pp_list, cd_list, com0_list, com1_list)
++
+         rows = []
+         for mode in mode_list:
+             for vdm in vdm_list:
+@@ -309,12 +342,18 @@ def main():
+                                         "ca_can_overlap_io": args.ca_can_overlap_io,
+                                     })
+                                     out = run_one(p)
+-                                    if isinstance(out, list):
+-                                        rows.extend(out)
+-                                    else:
+-                                        rows.append(out)
++                                    if not args.csv_full:
++                                        # compact: 스윕 키와 핵심 결과만 남김
++                                        if isinstance(out, list):
++                                            rows.extend([_compact_row(r, sweep_keys) for r in out])
++                                        else:
++                                            rows.append(_compact_row(out, sweep_keys))
++                                    else:
++                                        if isinstance(out, list):
++                                            rows.extend(out)
++                                        else:
++                                            rows.append(out)
+ 
+         cols = list(rows[0].keys()) if rows else []
+         with open(args.csv, "w", newline="") as f:
+             w = csv.DictWriter(f, fieldnames=cols)
+             w.writeheader()
+             for r in rows:
+                 w.writerow(r)
+         print(f"Wrote {len(rows)} rows → {args.csv}")
